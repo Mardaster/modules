@@ -1,3 +1,4 @@
+import asyncio  # Добавьте эту строку в начало модуля
 from hikkatl.types import Message, User
 from hikka import loader, utils
 from hikkatl.tl.types import UserStatusOnline, UserStatusOffline
@@ -21,7 +22,7 @@ class UserWatcherMod(loader.Module):
 
     async def client_ready(self, client, db):
         self.client = client
-        asyncio.create_task(self.status_checker())
+        asyncio.create_task(self.status_checker())  # Теперь asyncio доступен
 
     async def watchcmd(self, message: Message):
         """Начать отслеживание пользователя в этом чате"""
