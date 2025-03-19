@@ -7,7 +7,7 @@ import time
 @loader.tds
 class UserWatcherMod(loader.Module):
     """Следит за онлайн-статусом пользователей в чате"""
-    strings = {"name": "UserWatcher"}
+    strings = {"name": "test_module"}
 
     def __init__(self):
         self.watched_users = {}
