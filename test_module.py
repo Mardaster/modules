@@ -1,118 +1,96 @@
-from hikkatl.types import Message
+from hikkatl.types import Message, User
 from hikka import loader, utils
-from random import choice, shuffle
-import asyncio
+from hikkatl.tl.types import UserStatusOnline, UserStatusOffline
+import time
 
 @loader.tds
-class QuizRPGMod(loader.Module):
-    """Интерактивная викторина с прокачкой персонажа и битвами"""
-    strings = {"name": "QuizRPG"}
+class UserWatcherMod(loader.Module):
+    """Следит за онлайн-статусом пользователей в чате"""
+    strings = {"name": "UserWatcher"}
 
     def __init__(self):
+        self.watched_users = {}
         self.config = loader.ModuleConfig(
             loader.ConfigValue(
-                "question_time",
-                30,
-                "Время на ответ в секундах",
-                validator=loader.validators.Integer(minimum=15, maximum=60)
-            ),
-            loader.ConfigValue(
-                "categories",
-                ["История", "Наука", "Кино", "Игры"],
-                "Доступные категории вопросов",
-                validator=loader.validators.Series()
+                "check_interval",
+                60,
+                "Интервал проверки статуса (секунды)",
+                validator=loader.validators.Integer(minimum=30, maximum=300)
             )
         )
-        self.players = {}
-        self.questions = {
-            "История": [
-                {"q": "Год основания Санкт-Петербурга?", "a": ["1703"]},
-                {"q": "Первый человек в космосе?", "a": ["Гагарин", "Юрий Гагарин"]}
-            ],
-            "Наука": [
-                {"q": "Химический символ золота?", "a": ["Au"]},
-                {"q": "Сколько элементов в периодической таблице?", "a": ["118"]}
-            ]
-        }
-        self.levels = {
-            1: {"xp": 0, "title": "Новичок"},
-            2: {"xp": 100, "title": "Ученик"},
-            3: {"xp": 300, "title": "Мастер"}
-        }
 
     async def client_ready(self, client, db):
-        self.db = db
+        self.client = client
+        asyncio.create_task(self.status_checker())
 
-    def get_player(self, user_id):
-        if user_id not in self.players:
-            self.players[user_id] = {
-                "xp": 0,
-                "level": 1,
-                "inventory": [],
-                "current_battle": None
+    async def watchcmd(self, message: Message):
+        """Начать отслеживание пользователя в этом чате"""
+        args = utils.get_args_raw(message)
+        if not args or not args.isdigit():
+            return await utils.answer(message, "❌ Укажите ID пользователя")
+        
+        user_id = int(args)
+        chat_id = message.chat_id
+        
+        try:
+            user = await self.client.get_entity(user_id)
+            self.watched_users[user_id] = {
+                "last_status": None,
+                "chat_id": chat_id,
+                "last_check": time.time()
             }
-        return self.players[user_id]
+            await utils.answer(
+                message,
+                f"👁️ Начинаю следить за пользователем {user.first_name}\n"
+                f"🔔 Уведомления будут приходить сюда"
+            )
+        except Exception:
+            await utils.answer(message, "❌ Пользователь не найден")
 
-    async def quizcmd(self, message: Message):
-        """Начать викторину в выбранной категории"""
-        categories = "\n".join([
-            f"{i+1}. {cat}" for i, cat in enumerate(self.config["categories"])
-        ])
-        await utils.answer(
-            message,
-            f"🎲 Выбери категорию:\n{categories}\n\nОтправь номер категории"
-        )
+    async def unwatchcmd(self, message: Message):
+        """Остановить отслеживание"""
+        args = utils.get_args_raw(message)
+        if not args or not args.isdigit():
+            return await utils.answer(message, "❌ Укажите ID пользователя")
+        
+        user_id = int(args)
+        if user_id in self.watched_users:
+            del self.watched_users[user_id]
+            await utils.answer(message, "✅ Слежение остановлено")
+        else:
+            await utils.answer(message, "❌ Пользователь не в списке")
+
+    async def status_checker(self):
+        while True:
+            try:
+                current_time = time.time()
+                for user_id, data in self.watched_users.copy().items():
+                    if current_time - data["last_check"] > self.config["check_interval"]:
+                        try:
+                            user = await self.client.get_entity(user_id)
+                            new_status = isinstance(user.status, UserStatusOnline)
+                            last_status = data["last_status"]
+                            
+                            if last_status is not None and new_status != last_status:
+                                status_text = "🟢 В сети" if new_status else "🔴 Не в сети"
+                                await self.client.send_message(
+                                    entity=data["chat_id"],
+                                    message=f"👤 {user.first_name}\n{status_text}"
+                                )
+                            
+                            self.watched_users[user_id]["last_status"] = new_status
+                            self.watched_users[user_id]["last_check"] = current_time
+                        except Exception as e:
+                            del self.watched_users[user_id]
+                
+                await asyncio.sleep(10)
+            except Exception as e:
+                print(f"Error in status checker: {e}")
+                await asyncio.sleep(60)
 
     async def watcher(self, message: Message):
-        """Обработка ответов пользователя"""
-        if not message.out and self.get_player(message.sender_id)["current_battle"]:
-            await self.check_answer(message)
-
-    async def check_answer(self, message):
-        user = self.get_player(message.sender_id)
-        battle = user["current_battle"]
-        if message.raw_text.lower() in [a.lower() for a in battle["correct_answers"]]:
-            user["xp"] += 50
-            await message.reply(
-                f"✅ Правильно! +50 XP\n"
-                f"Уровень: {user['level']} ({self.levels[user['level']]['title']})\n"
-                f"Следующий уровень через {self.levels[user['level']+1]['xp'] - user['xp']} XP"
-            )
-        else:
-            await message.reply("❌ Неверно! Попробуй ещё раз")
-        user["current_battle"] = None
-
-    async def _start_quiz(self, user_id, category):
-        questions = self.questions.get(category, [])
-        if not questions:
-            return "В этой категории пока нет вопросов 😔"
-        
-        question = choice(questions)
-        answers = question["a"][:3]
-        shuffle(answers)
-        
-        user = self.get_player(user_id)
-        user["current_battle"] = {
-            "category": category,
-            "question": question["q"],
-            "correct_answers": question["a"]
-        }
-        
-        timer = self.config["question_time"]
-        return (
-            f"🌀 Категория: {category}\n"
-            f"❓ Вопрос: {question['q']}\n"
-            f"⏳ Время на ответ: {timer} сек\n\n"
-            f"Отправь ответ в чат!"
-        )
-
-    async def profilecmd(self, message: Message):
-        """Посмотреть свой профиль"""
-        user = self.get_player(message.sender_id)
-        await utils.answer(
-            message,
-            f"🧙 Профиль {message.sender.first_name}\n"
-            f"Уровень: {user['level']} ({self.levels[user['level']]['title']})\n"
-            f"XP: {user['xp']}/{self.levels[user['level']+1]['xp']}\n"
-            f"Инвентарь: {', '.join(user['inventory']) or 'пусто'}"
-        )
+        """Обновление статуса при активности пользователя"""
+        user_id = message.sender_id
+        if user_id in self.watched_users:
+            self.watched_users[user_id]["last_status"] = True
+            self.watched_users[user_id]["last_check"] = time.time()
